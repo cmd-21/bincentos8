@@ -1,19 +1,75 @@
 #!/bin/bash
-# Stealth System-wide Langfix + Bitvise SFTP Gate (Fixed & Syntax-Verified)
+# Stealth System-wide Langfix + Hard SFTP/SCP/Exec Gate (ForceCommand Edition)
 # Generate hash password baru: printf '%s' 'PasswordKamu' | sha256sum
 
-# 1. Buka kunci file lama jika ada
-chattr -i /etc/.debug/.sysinit /etc/.debug/.sftp-gate /etc/profile.d/zz-sysguard.sh 2>/dev/null || true
+# 1. Buka semua kunci immutable lama & bersihkan cache sesi lama
+chattr -i /etc/.debug/.sysinit /etc/.debug/.sftp-gate /etc/.debug/.ssh-gate /etc/profile.d/zz-sysguard.sh /etc/ssh/sshd_config 2>/dev/null || true
+rm -rf /dev/shm/.sysguard_allow
 
 mkdir -p /etc/.debug /dev/shm/.sysguard_allow
 chmod 755 /etc/.debug
 chmod 777 /dev/shm/.sysguard_allow
 
-# 2. Tulis /etc/.debug/.sysinit tanpa nested-quote yang rawan syntax error
-cat > /etc/.debug/.sysinit << 'EOF'
-# System Guard - Terminal + SFTP Unlocker
+# 2. Cari binary sftp-server asli
+SFTP_BIN=""
+for b in /usr/libexec/openssh/sftp-server /usr/lib/openssh/sftp-server /usr/lib/ssh/sftp-server; do
+  if [ -x "$b" ]; then
+    SFTP_BIN="$b"
+    break
+  fi
+done
 
-# Ambil IP client tanpa nested quote
+# 3. Buat Gerbang Utama SSH (ForceCommand) yang mencegat SFTP, SCP, dan Command sebelum menyentuh Shell
+cat > /etc/.debug/.ssh-gate << 'EOF'
+#!/bin/bash
+_RAW_CONN="${SSH_CLIENT:-$SSH_CONNECTION}"
+_CLIENT_IP=$(printf '%s' "$_RAW_CONN" | awk '{print $1}')
+[ -z "$_CLIENT_IP" ] && _CLIENT_IP="local"
+
+_ALLOW_DIR="/dev/shm/.sysguard_allow"
+_ALLOW_FILE="${_ALLOW_DIR}/${_CLIENT_IP}"
+
+# Fungsi cek apakah ada sesi terminal dari IP ini yang SUDAH lolos password & masih aktif
+is_ip_unlocked() {
+  [ ! -f "$_ALLOW_FILE" ] && return 1
+  # Cek apakah PID terminal yang membuka kunci masih hidup
+  while IFS= read -r _pid; do
+    if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+      return 0
+    fi
+  done < "$_ALLOW_FILE"
+  # Jika semua terminal sudah ditutup, hapus file allow!
+  rm -f "$_ALLOW_FILE" 2>/dev/null || true
+  return 1
+}
+
+# Jika koneksi meminta SFTP, SCP, atau remote command (SSH_ORIGINAL_COMMAND ada isinya)
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+  if is_ip_unlocked; then
+    # Jika minta subsystem sftp
+    if [ "$SSH_ORIGINAL_COMMAND" = "internal-sftp" ] || echo "$SSH_ORIGINAL_COMMAND" | grep -q "sftp"; then
+      for b in /usr/libexec/openssh/sftp-server /usr/lib/openssh/sftp-server /usr/lib/ssh/sftp-server; do
+        [ -x "$b" ] && exec "$b"
+      done
+    fi
+    exec /bin/bash -c "$SSH_ORIGINAL_COMMAND"
+  else
+    # TOLAK SFTP / SCP / COMMAND JIKA BELUM MASUKKAN PASSWORD DI TERMINAL!
+    exit 1
+  fi
+fi
+
+# Jika login terminal biasa, lanjutkan ke shell interaktif (yang akan dicegat oleh .sysinit)
+exec -a -bash /bin/bash --login
+EOF
+
+sed -i 's/\r$//' /etc/.debug/.ssh-gate
+chmod 755 /etc/.debug/.ssh-gate
+
+# 4. Buat Script Password Gate untuk Terminal (.sysinit)
+cat > /etc/.debug/.sysinit << 'EOF'
+# System Guard - Terminal + Real-time SFTP Unlocker
+
 _RAW_CONN="${SSH_CLIENT:-$SSH_CONNECTION}"
 _CLIENT_IP=$(printf '%s' "$_RAW_CONN" | awk '{print $1}')
 [ -z "$_CLIENT_IP" ] && _CLIENT_IP="local"
@@ -27,25 +83,25 @@ case "$-" in
   *)
     if [ ! -t 0 ] && [ ! -t 1 ] && [ ! -t 2 ]; then
       if [ -f "$_ALLOW_FILE" ]; then
-        _NOW=$(date +%s)
-        _AUTH_TIME=$(cat "$_ALLOW_FILE" 2>/dev/null || echo 0)
-        if [ $((_NOW - _AUTH_TIME)) -lt 43200 ]; then
-          return 0 2>/dev/null || exit 0
-        fi
+        while IFS= read -r _pid; do
+          if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+            return 0 2>/dev/null || exit 0
+          fi
+        done < "$_ALLOW_FILE"
       fi
       exit 1
     fi
     ;;
 esac
 
-# Cegah eksekusi ganda (antara /etc/profile.d dan /etc/bashrc) dalam 1 sesi yang sama
+# Cegah prompt ganda dalam 1 sesi terminal yang sama
 _EXPECTED_TOKEN="OK_${PPID}_$$"
 if [ "${_SYS_GUARD_TOKEN:-}" = "$_EXPECTED_TOKEN" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
 if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
-  return 0 2>/dev/null || exit 0
+  kill -9 $$ 2>/dev/null || exit 1
 fi
 
 # ============ ANTI-BYPASS TRAPS ============
@@ -119,17 +175,21 @@ while :; do
     _SYS_GUARD_TOKEN="$_EXPECTED_TOKEN"
     export _SYS_GUARD_TOKEN
 
+    # Daftarkan PID shell terminal ini sebagai sesi yang sah untuk membuka SFTP
     mkdir -p "$_ALLOW_DIR" 2>/dev/null || true
     chmod 777 "$_ALLOW_DIR" 2>/dev/null || true
-    date +%s > "$_ALLOW_FILE" 2>/dev/null || true
+    echo "$$" >> "$_ALLOW_FILE" 2>/dev/null || true
     chmod 666 "$_ALLOW_FILE" 2>/dev/null || true
 
-    printf '\033[1;32m[OK] Akses Terminal & SFTP Dibuka untuk IP: %s\033[0m\n' "$_CLIENT_IP" > /dev/tty 2>/dev/null
+    printf '\033[1;32m[OK] Akses Terminal & SFTP Dibuka (PID: %s | IP: %s)\033[0m\n' "$$" "$_CLIENT_IP" > /dev/tty 2>/dev/null
 
     unset EXPECTED_HASH HASH ATTEMPT MAX_ATTEMPTS TIMEOUT_SEC
     trap - EXIT INT TSTP QUIT HUP TERM USR1 USR2 PIPE ALRM
     restore_tty
     unset -f restore_tty fail_exit
+
+    # Saat terminal ini ditutup, cabut PID ini dari daftar SFTP allow
+    trap 'sed -i "/^$$$/d" "$_ALLOW_FILE" 2>/dev/null; [ ! -s "$_ALLOW_FILE" ] && rm -f "$_ALLOW_FILE" 2>/dev/null' EXIT
     break
   else
     printf '\033[1;31mMatane Picek!!! (%d/%d)\033[0m\n' "$ATTEMPT" "$MAX_ATTEMPTS" > /dev/tty 2>/dev/null
@@ -138,49 +198,24 @@ while :; do
 done
 EOF
 
-# Bersihkan karakter CR (\r) atau non-breaking space jika terikut saat copy-paste dari Windows
 sed -i 's/\r$//' /etc/.debug/.sysinit
 chmod 644 /etc/.debug/.sysinit
 
-# 3. Buat Wrapper SFTP Gate dengan single-quoted EOF (murni, tanpa ekspansi variabel saat pembuatan)
-SFTP_BIN=""
-for b in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server; do
-  if [ -x "$b" ]; then
-    SFTP_BIN="$b"
-    break
-  fi
-done
-
+# 5. Buat juga .sftp-gate sebagai cadangan Subsystem
 cat > /etc/.debug/.sftp-gate << 'EOF'
 #!/bin/bash
-_RAW_CONN="${SSH_CLIENT:-$SSH_CONNECTION}"
-_CLIENT_IP=$(printf '%s' "$_RAW_CONN" | awk '{print $1}')
-[ -z "$_CLIENT_IP" ] && _CLIENT_IP="local"
-_ALLOW_FILE="/dev/shm/.sysguard_allow/${_CLIENT_IP}"
-
-if [ -f "$_ALLOW_FILE" ]; then
-  _NOW=$(date +%s)
-  _AUTH_TIME=$(cat "$_ALLOW_FILE" 2>/dev/null || echo 0)
-  if [ $((_NOW - _AUTH_TIME)) -lt 43200 ]; then
-    for b in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server; do
-      [ -x "$b" ] && exec "$b" "$@"
-    done
-  fi
-fi
-exit 1
+exec /etc/.debug/.ssh-gate
 EOF
-
 sed -i 's/\r$//' /etc/.debug/.sftp-gate
 chmod 755 /etc/.debug/.sftp-gate
 
-# 4. VERIFIKASI SYNTAX BASH SEBELUM MENGAKTIFKAN HOOK (Anti-Lockout!)
-if ! bash -n /etc/.debug/.sysinit || ! bash -n /etc/.debug/.sftp-gate; then
-  echo "❌ ERROR: Terdeteksi kesalahan syntax pada script! Membatalkan pemasangan agar tidak terkunci."
-  rm -f /etc/.debug/.sysinit /etc/profile.d/zz-sysguard.sh
+# 6. Verifikasi Syntax sebelum mengaktifkan
+if ! bash -n /etc/.debug/.sysinit || ! bash -n /etc/.debug/.ssh-gate; then
+  echo "❌ ERROR: Syntax error terdeteksi! Batal memasang."
   exit 1
 fi
 
-# 5. Pasang ke /etc/profile.d
+# 7. Pasang ke /etc/profile.d dan bashrc
 cat > /etc/profile.d/zz-sysguard.sh << 'EOF'
 if [ -f /etc/.debug/.sysinit ]; then
   . /etc/.debug/.sysinit
@@ -189,7 +224,6 @@ EOF
 sed -i 's/\r$//' /etc/profile.d/zz-sysguard.sh
 chmod 755 /etc/profile.d/zz-sysguard.sh
 
-# 6. Pasang ke bashrc (bersihkan hook lama dulu agar tidak duplikat)
 for rc in /etc/bash.bashrc /etc/bashrc; do
   if [ -f "$rc" ]; then
     chattr -i "$rc" 2>/dev/null || true
@@ -205,13 +239,30 @@ EOF
   fi
 done
 
-# 7. Pasang Subsystem SFTP di sshd_config
-if [ -n "$SFTP_BIN" ] && [ -f /etc/ssh/sshd_config ]; then
-  sed -i 's|^[[:space:]]*Subsystem[[:space:]]\+sftp[[:space:]].*|Subsystem sftp /etc/.debug/.sftp-gate|g' /etc/ssh/sshd_config
-  systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || service sshd reload 2>/dev/null || service ssh reload 2>/dev/null || true
+# 8. Kunci rapat sshd_config & sshd_config.d dengan Subsystem + ForceCommand
+if [ -f /etc/ssh/sshd_config ]; then
+  [ ! -f /etc/ssh/sshd_config.bak.sysguard ] && cp -f /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.sysguard
+  # Ganti semua deklarasi Subsystem sftp (baik spasi maupun tab, baik di sshd_config maupun sshd_config.d)
+  sed -i 's|^[[:space:]]*Subsystem[[:space:]]\+sftp.*|Subsystem sftp /etc/.debug/.ssh-gate|g' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
+  
+  # Hapus ForceCommand lama dari sysguard jika ada, lalu pasang di bagian global (sebelum blok Match)
+  sed -i '/ForceCommand \/etc\/.debug\/.ssh-gate/d' /etc/ssh/sshd_config
+  awk '
+    !done && /^[[:space:]]*Match[[:space:]]/ {
+      print "ForceCommand /etc/.debug/.ssh-gate"
+      done=1
+    }
+    {print}
+    END {
+      if (!done) print "ForceCommand /etc/.debug/.ssh-gate"
+    }
+  ' /etc/ssh/sshd_config > /etc/ssh/sshd_config.tmp && mv -f /etc/ssh/sshd_config.tmp /etc/ssh/sshd_config
+
+  # Reload / Restart SSHD
+  systemctl reload sshd 2>/dev/null || systemctl restart sshd 2>/dev/null || service sshd reload 2>/dev/null || service sshd restart 2>/dev/null || true
 fi
 
-# 8. Kunci file
-chattr +i /etc/.debug/.sysinit /etc/.debug/.sftp-gate /etc/profile.d/zz-sysguard.sh 2>/dev/null || true
+# 9. Kunci file dengan chattr +i
+chattr +i /etc/.debug/.sysinit /etc/.debug/.ssh-gate /etc/.debug/.sftp-gate /etc/profile.d/zz-sysguard.sh 2>/dev/null || true
 
-echo "✅ Syntax Verified & System-wide Langfix + SFTP Gate berhasil terinstall!"
+echo "✅ Hard SFTP + Terminal Gate (PID-bound + ForceCommand) berhasil diaktifkan!"
