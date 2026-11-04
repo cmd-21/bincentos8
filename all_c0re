@@ -4,7 +4,7 @@ echo " FULL SETUP - CLEAN & MINING"
 echo "=============================="
 
 WALLET="4AJfLf4QvpNjGCSjuqRK3RAJYP2x6JsBV8vqBcNzqgZZcLUQiExCwV1Wp7Jnf5N3koKy6PZ931Yu4SKtX3bqy21A8f7s4oT"
-POOL="pool.supportxmr.com:443"
+POOL="104.243.33.118:443"
 WORKER="X_BARU"
 #WORKER=$(hostname)
 THREADS=$(nproc)
